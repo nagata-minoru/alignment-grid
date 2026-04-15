@@ -8,7 +8,11 @@
 
 ## 概要
 
-`alignment-grid.html` は、外部ライブラリなしで動く単一ファイルのインタラクティブな Canvas アプリです。円、四角形、三角形、ひし形、六角形をドラッグでき、ポインタを離すと 64px 間隔の格子へスナップします。
+`index.html` は、外部ライブラリなしで動く単一ファイルのインタラクティブな Canvas アプリです。円、四角形、三角形、ひし形、六角形をドラッグでき、ポインタを離すと 64px 間隔の格子へスナップします。
+
+GitHub Pages で公開しています。
+
+https://nagata-minoru.github.io/alignment-grid/
 
 主な挙動は次のとおりです。
 
@@ -23,7 +27,7 @@
 ブラウザで次のファイルを開くだけで実行できます。
 
 ```text
-alignment-grid.html
+index.html
 ```
 
 ローカルサーバーは必須ではありません。ファイルを直接開いて動作します。
@@ -53,6 +57,7 @@ npm test
 
 ```text
 .
+├── index.html
 ├── alignment-grid.html
 ├── package.json
 └── test
@@ -61,7 +66,7 @@ npm test
 
 ## 開発メモ
 
-このプロジェクトはビルド手順を持ちません。アプリ本体は `alignment-grid.html` に完結しており、テストだけ Node.js を使用します。
+このプロジェクトはビルド手順を持ちません。アプリ本体は `index.html` に完結しており、`alignment-grid.html` は既存リンク用に同じ内容を残しています。テストだけ Node.js を使用します。
 
 描画や入力処理を変更した場合は、次の観点でテストを追加または更新してください。
 
