@@ -5,7 +5,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 /**
- * `alignment-grid.html` のインラインスクリプトを VM 上に読み込み、DOM と Canvas をスタブした検証環境を返す。
+ * `index.html` のインラインスクリプトを VM 上に読み込み、DOM と Canvas をスタブした検証環境を返す。
  *
  * @param {object} [options] スタブ環境の設定。
  * @param {number} [options.width=800] キャンバスの表示幅。
@@ -24,10 +24,10 @@ function loadAlignmentGrid({
   rectLeft = 10,
   rectTop = 20,
 } = {}) {
-  const htmlPath = path.join(__dirname, '..', 'alignment-grid.html');
+  const htmlPath = path.join(__dirname, '..', 'index.html');
   const html = fs.readFileSync(htmlPath, 'utf8');
   const scriptMatch = html.match(/<script>([\s\S]*)<\/script>/);
-  assert.ok(scriptMatch, 'alignment-grid.html にはインラインスクリプトが1つ含まれている必要があります');
+  assert.ok(scriptMatch, 'index.html にはインラインスクリプトが1つ含まれている必要があります');
 
   const contextCalls = [];
   const canvasContext = {

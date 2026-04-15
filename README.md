@@ -40,7 +40,7 @@ Node.js 20 以上を想定しています。
 npm test
 ```
 
-テストでは `alignment-grid.html` のインラインスクリプトを VM 上で読み込み、DOM と Canvas をスタブして検証します。
+テストでは `index.html` のインラインスクリプトを VM 上で読み込み、DOM と Canvas をスタブして検証します。
 
 検証している内容:
 
@@ -58,7 +58,6 @@ npm test
 ```text
 .
 ├── index.html
-├── alignment-grid.html
 ├── package.json
 └── test
     └── alignment-grid.test.js
@@ -66,7 +65,7 @@ npm test
 
 ## 開発メモ
 
-このプロジェクトはビルド手順を持ちません。アプリ本体は `index.html` に完結しており、`alignment-grid.html` は既存リンク用に同じ内容を残しています。テストだけ Node.js を使用します。
+このプロジェクトはビルド手順を持ちません。アプリ本体は `index.html` に完結しており、テストだけ Node.js を使用します。
 
 描画や入力処理を変更した場合は、次の観点でテストを追加または更新してください。
 
