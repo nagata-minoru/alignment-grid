@@ -351,11 +351,15 @@ globalThis.__alignmentGridTestExports = {
   ctx,
   resize,
   nearestGrid,
+  nearestGridInBounds,
   Shape,
   shapes,
+  responsiveColumnCount,
+  responsiveShapeSize,
+  layoutShapes,
   pointerPos,
   loop,
-  constants: { GRID, K, C, MASS },
+  constants: { GRID, K, C, MASS, SHAPE_COUNT },
   /**
    * VM 内部の現在のドラッグ状態を返す。
    *
@@ -376,6 +380,20 @@ globalThis.__alignmentGridTestExports = {
     window,
   };
 }
+
+/**
+ * `index.html` にモバイル表示用の viewport 指定があることを検証する。
+ *
+ * @returns {void}
+ */
+function testIndexDeclaresViewportMeta() {
+  const htmlPath = path.join(__dirname, '..', 'index.html');
+  const html = fs.readFileSync(htmlPath, 'utf8');
+
+  assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">/);
+}
+
+test('index.html はモバイル向け viewport を宣言する', testIndexDeclaresViewportMeta);
 
 /**
  * VM 由来の座標オブジェクトを Node 側のプレーンオブジェクトへ正規化する。
@@ -473,6 +491,26 @@ function testShapeSnapTargetsNearestGridPoint() {
 test('Shape.snap は最近傍の格子点を目標にしてシミュレーションを再開する', testShapeSnapTargetsNearestGridPoint);
 
 /**
+ * `Shape.snap` が画面端に近い図形の目標位置をキャンバス内に収めることを検証する。
+ *
+ * @returns {void}
+ */
+function testShapeSnapStaysInsideSmallViewport() {
+  const { Shape } = loadAlignmentGrid({
+    width: 320,
+    height: 568,
+  });
+  const shape = new Shape('circle', 319, 567, 24, 0);
+
+  shape.snap();
+
+  assert.equal(shape.tx, 296);
+  assert.equal(shape.ty, 544);
+}
+
+test('Shape.snap は小さい画面でも目標位置をキャンバス内に収める', testShapeSnapStaysInsideSmallViewport);
+
+/**
  * `Shape.step` がドラッグ中の図形に物理更新を適用しないことを検証する。
  *
  * @returns {void}
@@ -543,6 +581,8 @@ function testPointerDraggingMovesAndSnapsSelectedShape() {
   assert.equal(canvas.classList.contains('dragging'), true);
   assert.equal(canvas.capturedPointerId, pointerId);
 
+  const beforeMove = { x: shape.x, y: shape.y };
+
   canvas.dispatch('pointermove', {
     clientX: 210,
     clientY: 270,
@@ -551,8 +591,8 @@ function testPointerDraggingMovesAndSnapsSelectedShape() {
 
   assert.equal(shape.x, 200);
   assert.equal(shape.y, 250);
-  assert.equal(shape.vx, 4800);
-  assert.equal(shape.vy, 4200);
+  assert.equal(shape.vx, (200 - beforeMove.x) * 60);
+  assert.equal(shape.vy, (250 - beforeMove.y) * 60);
 
   canvas.dispatch('pointerup', {
     clientX: 210,
@@ -568,6 +608,93 @@ function testPointerDraggingMovesAndSnapsSelectedShape() {
 }
 
 test('ポインタドラッグは選択した図形を移動し、解放時に格子へスナップする', testPointerDraggingMovesAndSnapsSelectedShape);
+
+/**
+ * 図形が指定したキャンバス範囲内に収まっていることを検証する。
+ *
+ * @param {object[]} shapes 検証対象の図形配列。
+ * @param {number} width キャンバス幅。
+ * @param {number} height キャンバス高さ。
+ * @returns {void}
+ */
+function assertShapesFitCanvas(shapes, width, height) {
+  for (const shape of shapes) {
+    assert.ok(shape.x >= shape.size, `${shape.kind} の x が左にはみ出している`);
+    assert.ok(shape.x <= width - shape.size, `${shape.kind} の x が右にはみ出している`);
+    assert.ok(shape.y >= shape.size, `${shape.kind} の y が上にはみ出している`);
+    assert.ok(shape.y <= height - shape.size, `${shape.kind} の y が下にはみ出している`);
+    assert.ok(shape.tx >= shape.size, `${shape.kind} の tx が左にはみ出している`);
+    assert.ok(shape.tx <= width - shape.size, `${shape.kind} の tx が右にはみ出している`);
+    assert.ok(shape.ty >= shape.size, `${shape.kind} の ty が上にはみ出している`);
+    assert.ok(shape.ty <= height - shape.size, `${shape.kind} の ty が下にはみ出している`);
+  }
+}
+
+/**
+ * 初期配置が縦長の小さい画面で複数行に再配置され、全図形が表示範囲に収まることを検証する。
+ *
+ * @returns {void}
+ */
+function testResponsiveInitialLayoutFitsNarrowCanvas() {
+  const { shapes, responsiveColumnCount, responsiveShapeSize } = loadAlignmentGrid({
+    width: 320,
+    height: 568,
+    random: 0.5,
+  });
+
+  assert.equal(responsiveColumnCount(), 2);
+  assert.equal(responsiveShapeSize(), 16);
+  assert.equal(new Set(shapes.map((shape) => shape.tx)).size, 2);
+  assert.equal(new Set(shapes.map((shape) => shape.ty)).size, 4);
+  assertShapesFitCanvas(shapes, 320, 568);
+}
+
+test('初期配置は狭い画面で複数行に再配置される', testResponsiveInitialLayoutFitsNarrowCanvas);
+
+/**
+ * 500px 幅では2列を維持し、狭めのブラウザでも右端が切れないことを検証する。
+ *
+ * @returns {void}
+ */
+function testResponsiveLayoutKeepsTwoColumnsAtCompactWidth() {
+  const { shapes, responsiveColumnCount } = loadAlignmentGrid({
+    width: 500,
+    height: 844,
+    random: 0.5,
+  });
+
+  assert.equal(responsiveColumnCount(), 2);
+  assert.equal(new Set(shapes.map((shape) => shape.tx)).size, 2);
+  assertShapesFitCanvas(shapes, 500, 844);
+}
+
+test('500px 幅では2列配置を維持する', testResponsiveLayoutKeepsTwoColumnsAtCompactWidth);
+
+/**
+ * ウィンドウリサイズ時にキャンバスと図形配置が現在の画面サイズへ更新されることを検証する。
+ *
+ * @returns {void}
+ */
+function testWindowResizeRelayoutsShapes() {
+  const { canvas, shapes, window, responsiveColumnCount } = loadAlignmentGrid({
+    width: 800,
+    height: 600,
+    dpr: 1,
+    random: 0.5,
+  });
+
+  canvas.clientWidth = 320;
+  canvas.clientHeight = 568;
+  window.devicePixelRatio = 2;
+  window.dispatch('resize', {});
+
+  assert.equal(canvas.width, 640);
+  assert.equal(canvas.height, 1136);
+  assert.equal(responsiveColumnCount(), 2);
+  assertShapesFitCanvas(shapes, 320, 568);
+}
+
+test('resize は現在の画面サイズへ図形を再配置する', testWindowResizeRelayoutsShapes);
 
 /**
  * アニメーションループが図形を更新し、次フレームを再予約することを検証する。

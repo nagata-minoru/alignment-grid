@@ -2,13 +2,21 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Alignment Grid</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #0e0f13; color: #cdd; font: 13px/1.4 ui-monospace, monospace; overflow: hidden; }
-  canvas { display: block; width: 100vw; height: 100vh; cursor: grab; }
+  html, body { margin: 0; min-height: 100%; background: #0e0f13; color: #cdd; font: 13px/1.4 ui-monospace, monospace; overflow: hidden; }
+  body { height: 100vh; height: 100dvh; }
+  canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; cursor: grab; touch-action: none; }
   canvas.dragging { cursor: grabbing; }
-  .hud { position: fixed; top: 12px; left: 14px; pointer-events: none; opacity: .75; }
+  .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: max(14px, env(safe-area-inset-left)); max-width: calc(100vw - 28px); box-sizing: border-box; pointer-events: none; opacity: .75; overflow-wrap: anywhere; }
   .hud b { color: #9ef; }
+  @media (max-width: 480px) {
+    .hud { top: max(10px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); max-width: calc(100vw - 20px); font-size: 12px; }
+  }
+  @media (max-height: 420px) {
+    .hud div + div { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -22,6 +30,24 @@ const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 let W, H, DPR;
 
+const GRID = 64;
+const K = 140;       // バネ定数
+const C = 12;        // 減衰係数
+const MASS = 1;
+const SHAPE_COUNT = 8;
+let shapes = [];
+
+/**
+ * 値を指定された範囲内に収める。
+ * @param {number} value - 対象値
+ * @param {number} min - 最小値
+ * @param {number} max - 最大値
+ * @returns {number} 範囲内に収めた値
+ */
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
 /**
  * キャンバスを表示サイズに合わせてリサイズし、DPRに応じて変換行列を設定する。
  */
@@ -32,14 +58,10 @@ function resize() {
   canvas.width = W * DPR;
   canvas.height = H * DPR;
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  if (shapes.length > 0) layoutShapes();
 }
 window.addEventListener('resize', resize);
 resize();
-
-const GRID = 64;
-const K = 140;       // バネ定数
-const C = 12;        // 減衰係数
-const MASS = 1;
 
 /**
  * 制約系: 与えられた座標に最も近い格子点を返す。
@@ -52,6 +74,23 @@ function nearestGrid(x, y) {
   return {
     x: Math.round(x / GRID) * GRID,
     y: Math.round(y / GRID) * GRID,
+  };
+}
+
+/**
+ * 格子点をキャンバス内に収める。
+ * @param {number} x - 現在のX座標（ピクセル）
+ * @param {number} y - 現在のY座標（ピクセル）
+ * @param {number} margin - 図形サイズ分の余白
+ * @returns {{x: number, y: number}} キャンバス内に収めた格子点座標
+ */
+function nearestGridInBounds(x, y, margin = 0) {
+  const g = nearestGrid(x, y);
+  const maxX = Math.max(margin, W - margin);
+  const maxY = Math.max(margin, H - margin);
+  return {
+    x: clamp(g.x, margin, maxX),
+    y: clamp(g.y, margin, maxY),
   };
 }
 
@@ -93,7 +132,7 @@ class Shape {
    * ドラッグ解放時に呼ばれ、settled フラグをリセットしてバネ振動を再開させる。
    */
   snap() {
-    const g = nearestGrid(this.x, this.y);
+    const g = nearestGridInBounds(this.x, this.y, this.size);
     this.tx = g.x;
     this.ty = g.y;
     this.settled = false;
@@ -197,20 +236,73 @@ class Shape {
   }
 }
 
+/**
+ * 画面幅に応じた図形の列数を返す。
+ * @returns {number} レイアウト列数
+ */
+function responsiveColumnCount() {
+  if (W < 280) return 1;
+  if (W < 560) return 2;
+  if (W < 760) return 3;
+  return 4;
+}
+
+/**
+ * 画面サイズに応じた基準図形サイズを返す。
+ * @returns {number} 図形の基準サイズ
+ */
+function responsiveShapeSize() {
+  return clamp(Math.min(W, H) * 0.045, 16, 28);
+}
+
+/**
+ * 現在のキャンバスサイズに合わせて図形を再配置する。
+ */
+function layoutShapes() {
+  const columns = Math.min(responsiveColumnCount(), shapes.length);
+  const rows = Math.ceil(shapes.length / columns);
+  const left = clamp(W * 0.12, 48, 120);
+  const right = W - left;
+  const top = clamp(H * 0.22, H < 420 ? 88 : 104, 160);
+  const bottom = H - clamp(H * 0.12, 40, 110);
+  const baseSize = responsiveShapeSize();
+
+  for (let i = 0; i < shapes.length; i++) {
+    const sh = shapes[i];
+    const size = baseSize * sh.sizeFactor;
+    const col = i % columns;
+    const row = Math.floor(i / columns);
+    const xRatio = columns === 1 ? 0.5 : col / (columns - 1);
+    const yRatio = rows === 1 ? 0.5 : row / (rows - 1);
+    const target = nearestGridInBounds(
+      left + (right - left) * xRatio,
+      top + (bottom - top) * yRatio,
+      size,
+    );
+    const offset = Math.min(10, baseSize * 0.4);
+
+    sh.size = size;
+    sh.x = clamp(target.x + (i % 2 === 0 ? -offset : offset), sh.size, Math.max(sh.size, W - sh.size));
+    sh.y = clamp(target.y + (i % 3 === 0 ? -offset : offset), sh.size, Math.max(sh.size, H - sh.size));
+    sh.tx = target.x;
+    sh.ty = target.y;
+    sh.vx = 0;
+    sh.vy = 0;
+    sh.dragging = false;
+    sh.settled = false;
+  }
+}
+
 // 図形の初期配置を生成
 const kinds = ['circle', 'square', 'triangle', 'diamond', 'hex'];
-const shapes = [];
-for (let i = 0; i < 8; i++) {
+for (let i = 0; i < SHAPE_COUNT; i++) {
   const k = kinds[i % kinds.length];
-  const x = 120 + (i % 4) * 160 + (Math.random() - 0.5) * 20;
-  const y = 180 + Math.floor(i / 4) * 180 + (Math.random() - 0.5) * 20;
-  const s = 22 + Math.random() * 8;
   const hue = (i * 47) % 360;
-  const sh = new Shape(k, x, y, s, hue);
-  const g = nearestGrid(x, y);
-  sh.tx = g.x; sh.ty = g.y;
+  const sh = new Shape(k, 0, 0, 0, hue);
+  sh.sizeFactor = 0.9 + Math.random() * 0.2;
   shapes.push(sh);
 }
+layoutShapes();
 
 /**
  * 背景の格子線と交点のドットを描画する。

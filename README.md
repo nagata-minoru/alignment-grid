@@ -20,6 +20,7 @@ https://nagata-minoru.github.io/alignment-grid/
 - 最寄り格子点へのスナップ
 - バネ定数 `k=140`、減衰係数 `c=12` の物理挙動
 - DPR を考慮した Canvas リサイズ
+- 画面幅に応じた図形配置とタッチ操作
 - Node.js 組み込みテストランナーによるロジックテスト
 
 ## デモの実行
