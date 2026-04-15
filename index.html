@@ -1,416 +1,463 @@
 <!doctype html>
 <html lang="en">
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Alignment Grid</title>
-<style>
-  html, body { margin: 0; min-height: 100%; background: #0e0f13; color: #cdd; font: 13px/1.4 ui-monospace, monospace; overflow: hidden; }
-  body { height: 100vh; height: 100dvh; }
-  canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; cursor: grab; touch-action: none; }
-  canvas.dragging { cursor: grabbing; }
-  .hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: max(14px, env(safe-area-inset-left)); max-width: calc(100vw - 28px); box-sizing: border-box; pointer-events: none; opacity: .75; overflow-wrap: anywhere; }
-  .hud b { color: #9ef; }
-  @media (max-width: 480px) {
-    .hud { top: max(10px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); max-width: calc(100vw - 20px); font-size: 12px; }
-  }
-  @media (max-height: 420px) {
-    .hud div + div { display: none; }
-  }
-</style>
-</head>
-<body>
-<canvas id="c"></canvas>
-<div class="hud">
-  <div><b>alignment grid</b> — 図形をドラッグし、離すと格子にスナップ</div>
-  <div>バネ定数 <b>k=140</b> ・ 減衰 <b>c=12</b> ・ 格子 <b>64px</b></div>
-</div>
-<script>
-const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
-let W, H, DPR;
-
-const GRID = 64;
-const K = 140;       // バネ定数
-const C = 12;        // 減衰係数
-const MASS = 1;
-const SHAPE_COUNT = 8;
-let shapes = [];
-
-/**
- * 値を指定された範囲内に収める。
- * @param {number} value - 対象値
- * @param {number} min - 最小値
- * @param {number} max - 最大値
- * @returns {number} 範囲内に収めた値
- */
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
-
-/**
- * キャンバスを表示サイズに合わせてリサイズし、DPRに応じて変換行列を設定する。
- */
-function resize() {
-  DPR = window.devicePixelRatio || 1;
-  W = canvas.clientWidth;
-  H = canvas.clientHeight;
-  canvas.width = W * DPR;
-  canvas.height = H * DPR;
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  if (shapes.length > 0) layoutShapes();
-}
-window.addEventListener('resize', resize);
-resize();
-
-/**
- * 制約系: 与えられた座標に最も近い格子点を返す。
- * 図形の静止位置（バネの目標点）を決定するために使用する。
- * @param {number} x - 現在のX座標（ピクセル）
- * @param {number} y - 現在のY座標（ピクセル）
- * @returns {{x: number, y: number}} 最近傍の格子点座標
- */
-function nearestGrid(x, y) {
-  return {
-    x: Math.round(x / GRID) * GRID,
-    y: Math.round(y / GRID) * GRID,
-  };
-}
-
-/**
- * 格子点をキャンバス内に収める。
- * @param {number} x - 現在のX座標（ピクセル）
- * @param {number} y - 現在のY座標（ピクセル）
- * @param {number} margin - 図形サイズ分の余白
- * @returns {{x: number, y: number}} キャンバス内に収めた格子点座標
- */
-function nearestGridInBounds(x, y, margin = 0) {
-  const g = nearestGrid(x, y);
-  const maxX = Math.max(margin, W - margin);
-  const maxY = Math.max(margin, H - margin);
-  return {
-    x: clamp(g.x, margin, maxX),
-    y: clamp(g.y, margin, maxY),
-  };
-}
-
-class Shape {
-  /**
-   * 図形インスタンスを生成する。
-   * @param {('circle'|'square'|'triangle'|'diamond'|'hex')} kind - 図形の種類
-   * @param {number} x - 初期X座標
-   * @param {number} y - 初期Y座標
-   * @param {number} size - 図形の基準サイズ（半径相当）
-   * @param {number} hue - HSL色相（0〜360）
-   */
-  constructor(kind, x, y, size, hue) {
-    this.kind = kind;           // 図形種別: 'circle' | 'square' | 'triangle' | 'diamond' | 'hex'
-    this.x = x; this.y = y;     // 位置
-    this.vx = 0; this.vy = 0;   // 速度
-    this.tx = x; this.ty = y;   // 目標（静止）位置
-    this.size = size;
-    this.hue = hue;
-    this.dragging = false;
-    this.settled = false;
-    this.rot = 0;
-    this.rotTarget = 0;
-  }
-
-  /**
-   * 指定された座標が図形の当たり判定（円形）内にあるか判定する。
-   * @param {number} px - 判定するX座標
-   * @param {number} py - 判定するY座標
-   * @returns {boolean} 図形の内側なら true
-   */
-  pick(px, py) {
-    const dx = px - this.x, dy = py - this.y;
-    return dx*dx + dy*dy <= this.size*this.size;
-  }
-
-  /**
-   * 現在位置から最近傍の格子点を求め、バネの目標点として設定する。
-   * ドラッグ解放時に呼ばれ、settled フラグをリセットしてバネ振動を再開させる。
-   */
-  snap() {
-    const g = nearestGridInBounds(this.x, this.y, this.size);
-    this.tx = g.x;
-    this.ty = g.y;
-    this.settled = false;
-  }
-
-  /**
-   * バネ-ダンパ系 (F = -k(x - tx) - c·v) で位置と速度を1ステップ進める。
-   * ドラッグ中はスキップし、十分小さい速度と距離になったら静止状態に固定する。
-   * @param {number} dt - 積分タイムステップ（秒）
-   */
-  step(dt) {
-    if (this.dragging) return;
-    // 粘性減衰付きフックの法則: F = -k(x - tx) - c*v
-    const fx = -K * (this.x - this.tx) - C * this.vx;
-    const fy = -K * (this.y - this.ty) - C * this.vy;
-    this.vx += (fx / MASS) * dt;
-    this.vy += (fy / MASS) * dt;
-    this.x += this.vx * dt;
-    this.y += this.vy * dt;
-
-    // 静止判定
-    const spd = Math.hypot(this.vx, this.vy);
-    const dist = Math.hypot(this.x - this.tx, this.y - this.ty);
-    if (spd < 0.5 && dist < 0.3) {
-      this.x = this.tx; this.y = this.ty;
-      this.vx = 0; this.vy = 0;
-      this.settled = true;
-    } else {
-      this.settled = false;
-    }
-  }
-
-  /**
-   * 図形本体と、未静止時は目標点マーカー・テザー線を描画する。
-   * @param {CanvasRenderingContext2D} ctx - 描画先の2Dコンテキスト
-   */
-  draw(ctx) {
-    const s = this.size;
-    // 目標点マーカー
-    if (!this.settled) {
-      ctx.save();
-      ctx.translate(this.tx, this.ty);
-      ctx.strokeStyle = `hsla(${this.hue}, 70%, 60%, 0.35)`;
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 3]);
-      ctx.beginPath(); ctx.arc(0, 0, s * 0.9, 0, Math.PI * 2); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.restore();
-
-      // テザー線（現在位置と目標点を結ぶ線）
-      ctx.strokeStyle = `hsla(${this.hue}, 70%, 60%, 0.25)`;
-      ctx.beginPath();
-      ctx.moveTo(this.x, this.y);
-      ctx.lineTo(this.tx, this.ty);
-      ctx.stroke();
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Alignment Grid</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: #0e0f13;
+      color: #cdd;
+      font: 13px/1.4 ui-monospace, monospace;
+      overflow: hidden;
     }
 
-    ctx.save();
-    ctx.translate(this.x, this.y);
-    ctx.rotate(this.rot);
+    body {
+      height: 100vh;
+      height: 100dvh;
+    }
 
-    const fill = `hsl(${this.hue}, 70%, 55%)`;
-    const edge = `hsl(${this.hue}, 80%, 75%)`;
-    ctx.fillStyle = fill;
-    ctx.strokeStyle = edge;
-    ctx.lineWidth = 2;
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      cursor: grab;
+      touch-action: none;
+    }
 
-    ctx.beginPath();
-    switch (this.kind) {
-      case 'circle':
-        ctx.arc(0, 0, s, 0, Math.PI * 2);
-        break;
-      case 'square':
-        ctx.rect(-s, -s, s * 2, s * 2);
-        break;
-      case 'triangle': {
-        const h = s * Math.sqrt(3);
-        ctx.moveTo(0, -h * 0.66);
-        ctx.lineTo(s, h * 0.33);
-        ctx.lineTo(-s, h * 0.33);
-        ctx.closePath();
-        break;
+    canvas.dragging {
+      cursor: grabbing;
+    }
+
+    .hud {
+      position: fixed;
+      top: max(12px, env(safe-area-inset-top));
+      left: max(14px, env(safe-area-inset-left));
+      max-width: calc(100vw - 28px);
+      box-sizing: border-box;
+      pointer-events: none;
+      opacity: .75;
+      overflow-wrap: anywhere;
+    }
+
+    .hud b {
+      color: #9ef;
+    }
+
+    @media (max-width: 480px) {
+      .hud {
+        top: max(10px, env(safe-area-inset-top));
+        left: max(10px, env(safe-area-inset-left));
+        max-width: calc(100vw - 20px);
+        font-size: 12px;
       }
-      case 'diamond':
-        ctx.moveTo(0, -s); ctx.lineTo(s, 0);
-        ctx.lineTo(0, s); ctx.lineTo(-s, 0);
-        ctx.closePath();
-        break;
-      case 'hex':
-        for (let i = 0; i < 6; i++) {
-          const a = (i / 6) * Math.PI * 2;
-          const px = Math.cos(a) * s, py = Math.sin(a) * s;
-          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+
+    @media (max-height: 420px) {
+      .hud div+div {
+        display: none;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="c"></canvas>
+  <div class="hud">
+    <div><b>alignment grid</b> — 図形をドラッグし、離すと格子にスナップ</div>
+    <div>バネ定数 <b>k=140</b> ・ 減衰 <b>c=12</b> ・ 格子 <b>64px</b></div>
+  </div>
+  <script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    let W, H, DPR;
+
+    const GRID = 64;
+    const K = 140;       // バネ定数
+    const C = 12;        // 減衰係数
+    const MASS = 1;
+    const SHAPE_COUNT = 8;
+    let shapes = [];
+
+    /**
+     * 値を指定された範囲内に収める。
+     * @param {number} value - 対象値
+     * @param {number} min - 最小値
+     * @param {number} max - 最大値
+     * @returns {number} 範囲内に収めた値
+     */
+    function clamp(value, min, max) {
+      return Math.min(max, Math.max(min, value));
+    }
+
+    /**
+     * キャンバスを表示サイズに合わせてリサイズし、DPRに応じて変換行列を設定する。
+     */
+    function resize() {
+      DPR = window.devicePixelRatio || 1;
+      W = canvas.clientWidth;
+      H = canvas.clientHeight;
+      canvas.width = W * DPR;
+      canvas.height = H * DPR;
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      if (shapes.length > 0) layoutShapes();
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    /**
+     * 制約系: 与えられた座標に最も近い格子点を返す。
+     * 図形の静止位置（バネの目標点）を決定するために使用する。
+     * @param {number} x - 現在のX座標（ピクセル）
+     * @param {number} y - 現在のY座標（ピクセル）
+     * @returns {{x: number, y: number}} 最近傍の格子点座標
+     */
+    function nearestGrid(x, y) {
+      return {
+        x: Math.round(x / GRID) * GRID,
+        y: Math.round(y / GRID) * GRID,
+      };
+    }
+
+    /**
+     * 格子点をキャンバス内に収める。
+     * @param {number} x - 現在のX座標（ピクセル）
+     * @param {number} y - 現在のY座標（ピクセル）
+     * @param {number} margin - 図形サイズ分の余白
+     * @returns {{x: number, y: number}} キャンバス内に収めた格子点座標
+     */
+    function nearestGridInBounds(x, y, margin = 0) {
+      const g = nearestGrid(x, y);
+      const maxX = Math.max(margin, W - margin);
+      const maxY = Math.max(margin, H - margin);
+      return {
+        x: clamp(g.x, margin, maxX),
+        y: clamp(g.y, margin, maxY),
+      };
+    }
+
+    class Shape {
+      /**
+       * 図形インスタンスを生成する。
+       * @param {('circle'|'square'|'triangle'|'diamond'|'hex')} kind - 図形の種類
+       * @param {number} x - 初期X座標
+       * @param {number} y - 初期Y座標
+       * @param {number} size - 図形の基準サイズ（半径相当）
+       * @param {number} hue - HSL色相（0〜360）
+       */
+      constructor(kind, x, y, size, hue) {
+        this.kind = kind;           // 図形種別: 'circle' | 'square' | 'triangle' | 'diamond' | 'hex'
+        this.x = x; this.y = y;     // 位置
+        this.vx = 0; this.vy = 0;   // 速度
+        this.tx = x; this.ty = y;   // 目標（静止）位置
+        this.size = size;
+        this.hue = hue;
+        this.dragging = false;
+        this.settled = false;
+        this.rot = 0;
+        this.rotTarget = 0;
+      }
+
+      /**
+       * 指定された座標が図形の当たり判定（円形）内にあるか判定する。
+       * @param {number} px - 判定するX座標
+       * @param {number} py - 判定するY座標
+       * @returns {boolean} 図形の内側なら true
+       */
+      pick(px, py) {
+        const dx = px - this.x, dy = py - this.y;
+        return dx * dx + dy * dy <= this.size * this.size;
+      }
+
+      /**
+       * 現在位置から最近傍の格子点を求め、バネの目標点として設定する。
+       * ドラッグ解放時に呼ばれ、settled フラグをリセットしてバネ振動を再開させる。
+       */
+      snap() {
+        const g = nearestGridInBounds(this.x, this.y, this.size);
+        this.tx = g.x;
+        this.ty = g.y;
+        this.settled = false;
+      }
+
+      /**
+       * バネ-ダンパ系 (F = -k(x - tx) - c·v) で位置と速度を1ステップ進める。
+       * ドラッグ中はスキップし、十分小さい速度と距離になったら静止状態に固定する。
+       * @param {number} dt - 積分タイムステップ（秒）
+       */
+      step(dt) {
+        if (this.dragging) return;
+        // 粘性減衰付きフックの法則: F = -k(x - tx) - c*v
+        const fx = -K * (this.x - this.tx) - C * this.vx;
+        const fy = -K * (this.y - this.ty) - C * this.vy;
+        this.vx += (fx / MASS) * dt;
+        this.vy += (fy / MASS) * dt;
+        this.x += this.vx * dt;
+        this.y += this.vy * dt;
+
+        // 静止判定
+        const spd = Math.hypot(this.vx, this.vy);
+        const dist = Math.hypot(this.x - this.tx, this.y - this.ty);
+        if (spd < 0.5 && dist < 0.3) {
+          this.x = this.tx; this.y = this.ty;
+          this.vx = 0; this.vy = 0;
+          this.settled = true;
+        } else {
+          this.settled = false;
         }
-        ctx.closePath();
-        break;
+      }
+
+      /**
+       * 図形本体と、未静止時は目標点マーカー・テザー線を描画する。
+       * @param {CanvasRenderingContext2D} ctx - 描画先の2Dコンテキスト
+       */
+      draw(ctx) {
+        const s = this.size;
+        // 目標点マーカー
+        if (!this.settled) {
+          ctx.save();
+          ctx.translate(this.tx, this.ty);
+          ctx.strokeStyle = `hsla(${this.hue}, 70%, 60%, 0.35)`;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath(); ctx.arc(0, 0, s * 0.9, 0, Math.PI * 2); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.restore();
+
+          // テザー線（現在位置と目標点を結ぶ線）
+          ctx.strokeStyle = `hsla(${this.hue}, 70%, 60%, 0.25)`;
+          ctx.beginPath();
+          ctx.moveTo(this.x, this.y);
+          ctx.lineTo(this.tx, this.ty);
+          ctx.stroke();
+        }
+
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.rot);
+
+        const fill = `hsl(${this.hue}, 70%, 55%)`;
+        const edge = `hsl(${this.hue}, 80%, 75%)`;
+        ctx.fillStyle = fill;
+        ctx.strokeStyle = edge;
+        ctx.lineWidth = 2;
+
+        ctx.beginPath();
+        switch (this.kind) {
+          case 'circle':
+            ctx.arc(0, 0, s, 0, Math.PI * 2);
+            break;
+          case 'square':
+            ctx.rect(-s, -s, s * 2, s * 2);
+            break;
+          case 'triangle': {
+            const h = s * Math.sqrt(3);
+            ctx.moveTo(0, -h * 0.66);
+            ctx.lineTo(s, h * 0.33);
+            ctx.lineTo(-s, h * 0.33);
+            ctx.closePath();
+            break;
+          }
+          case 'diamond':
+            ctx.moveTo(0, -s); ctx.lineTo(s, 0);
+            ctx.lineTo(0, s); ctx.lineTo(-s, 0);
+            ctx.closePath();
+            break;
+          case 'hex':
+            for (let i = 0; i < 6; i++) {
+              const a = (i / 6) * Math.PI * 2;
+              const px = Math.cos(a) * s, py = Math.sin(a) * s;
+              if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            }
+            ctx.closePath();
+            break;
+        }
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
     }
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
-  }
-}
 
-/**
- * 画面幅に応じた図形の列数を返す。
- * @returns {number} レイアウト列数
- */
-function responsiveColumnCount() {
-  if (W < 280) return 1;
-  if (W < 560) return 2;
-  if (W < 760) return 3;
-  return 4;
-}
-
-/**
- * 画面サイズに応じた基準図形サイズを返す。
- * @returns {number} 図形の基準サイズ
- */
-function responsiveShapeSize() {
-  return clamp(Math.min(W, H) * 0.045, 16, 28);
-}
-
-/**
- * 現在のキャンバスサイズに合わせて図形を再配置する。
- */
-function layoutShapes() {
-  const columns = Math.min(responsiveColumnCount(), shapes.length);
-  const rows = Math.ceil(shapes.length / columns);
-  const left = clamp(W * 0.12, 48, 120);
-  const right = W - left;
-  const top = clamp(H * 0.22, H < 420 ? 88 : 104, 160);
-  const bottom = H - clamp(H * 0.12, 40, 110);
-  const baseSize = responsiveShapeSize();
-
-  for (let i = 0; i < shapes.length; i++) {
-    const sh = shapes[i];
-    const size = baseSize * sh.sizeFactor;
-    const col = i % columns;
-    const row = Math.floor(i / columns);
-    const xRatio = columns === 1 ? 0.5 : col / (columns - 1);
-    const yRatio = rows === 1 ? 0.5 : row / (rows - 1);
-    const target = nearestGridInBounds(
-      left + (right - left) * xRatio,
-      top + (bottom - top) * yRatio,
-      size,
-    );
-    const offset = Math.min(10, baseSize * 0.4);
-
-    sh.size = size;
-    sh.x = clamp(target.x + (i % 2 === 0 ? -offset : offset), sh.size, Math.max(sh.size, W - sh.size));
-    sh.y = clamp(target.y + (i % 3 === 0 ? -offset : offset), sh.size, Math.max(sh.size, H - sh.size));
-    sh.tx = target.x;
-    sh.ty = target.y;
-    sh.vx = 0;
-    sh.vy = 0;
-    sh.dragging = false;
-    sh.settled = false;
-  }
-}
-
-// 図形の初期配置を生成
-const kinds = ['circle', 'square', 'triangle', 'diamond', 'hex'];
-for (let i = 0; i < SHAPE_COUNT; i++) {
-  const k = kinds[i % kinds.length];
-  const hue = (i * 47) % 360;
-  const sh = new Shape(k, 0, 0, 0, hue);
-  sh.sizeFactor = 0.9 + Math.random() * 0.2;
-  shapes.push(sh);
-}
-layoutShapes();
-
-/**
- * 背景の格子線と交点のドットを描画する。
- * 毎フレームの最初に呼び出され、キャンバス全体をクリアする役割も兼ねる。
- */
-function drawGrid() {
-  ctx.fillStyle = '#0e0f13';
-  ctx.fillRect(0, 0, W, H);
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let x = 0; x <= W; x += GRID) {
-    ctx.moveTo(x + 0.5, 0);
-    ctx.lineTo(x + 0.5, H);
-  }
-  for (let y = 0; y <= H; y += GRID) {
-    ctx.moveTo(0, y + 0.5);
-    ctx.lineTo(W, y + 0.5);
-  }
-  ctx.stroke();
-
-  // 格子の交点ドット
-  ctx.fillStyle = 'rgba(255,255,255,0.08)';
-  for (let x = 0; x <= W; x += GRID) {
-    for (let y = 0; y <= H; y += GRID) {
-      ctx.fillRect(x - 1, y - 1, 2, 2);
+    /**
+     * 画面幅に応じた図形の列数を返す。
+     * @returns {number} レイアウト列数
+     */
+    function responsiveColumnCount() {
+      if (W < 280) return 1;
+      if (W < 560) return 2;
+      if (W < 760) return 3;
+      return 4;
     }
-  }
-}
 
-// 入力状態
-let dragShape = null;
-let dragDX = 0, dragDY = 0;
-
-/**
- * ポインタイベントをキャンバスローカル座標に変換する。
- * @param {PointerEvent} e - ポインタイベント
- * @returns {{x: number, y: number}} キャンバス左上を原点とする座標
- */
-function pointerPos(e) {
-  const r = canvas.getBoundingClientRect();
-  return { x: e.clientX - r.left, y: e.clientY - r.top };
-}
-
-canvas.addEventListener('pointerdown', (e) => {
-  const p = pointerPos(e);
-  for (let i = shapes.length - 1; i >= 0; i--) {
-    if (shapes[i].pick(p.x, p.y)) {
-      dragShape = shapes[i];
-      dragDX = dragShape.x - p.x;
-      dragDY = dragShape.y - p.y;
-      dragShape.dragging = true;
-      dragShape.vx = 0; dragShape.vy = 0;
-      // 最前面に移動
-      shapes.splice(i, 1);
-      shapes.push(dragShape);
-      canvas.classList.add('dragging');
-      canvas.setPointerCapture(e.pointerId);
-      return;
+    /**
+     * 画面サイズに応じた基準図形サイズを返す。
+     * @returns {number} 図形の基準サイズ
+     */
+    function responsiveShapeSize() {
+      return clamp(Math.min(W, H) * 0.045, 16, 28);
     }
-  }
-});
 
-canvas.addEventListener('pointermove', (e) => {
-  if (!dragShape) return;
-  const p = pointerPos(e);
-  const nx = p.x + dragDX;
-  const ny = p.y + dragDY;
-  // リリース時の初速として速度を記録
-  dragShape.vx = (nx - dragShape.x) * 60;
-  dragShape.vy = (ny - dragShape.y) * 60;
-  dragShape.x = nx;
-  dragShape.y = ny;
-});
+    /**
+     * 現在のキャンバスサイズに合わせて図形を再配置する。
+     */
+    function layoutShapes() {
+      const columns = Math.min(responsiveColumnCount(), shapes.length);
+      const rows = Math.ceil(shapes.length / columns);
+      const left = clamp(W * 0.12, 48, 120);
+      const right = W - left;
+      const top = clamp(H * 0.22, H < 420 ? 88 : 104, 160);
+      const bottom = H - clamp(H * 0.12, 40, 110);
+      const baseSize = responsiveShapeSize();
 
-canvas.addEventListener('pointerup', (e) => {
-  if (!dragShape) return;
-  dragShape.dragging = false;
-  dragShape.snap();
-  dragShape = null;
-  canvas.classList.remove('dragging');
-});
+      for (let i = 0; i < shapes.length; i++) {
+        const sh = shapes[i];
+        const size = baseSize * sh.sizeFactor;
+        const col = i % columns;
+        const row = Math.floor(i / columns);
+        const xRatio = columns === 1 ? 0.5 : col / (columns - 1);
+        const yRatio = rows === 1 ? 0.5 : row / (rows - 1);
+        const target = nearestGridInBounds(
+          left + (right - left) * xRatio,
+          top + (bottom - top) * yRatio,
+          size,
+        );
+        const offset = Math.min(10, baseSize * 0.4);
 
-// 固定ステップ積分を用いたアニメーションループ
-let last = performance.now();
-/**
- * メインのアニメーションループ。
- * 1フレームを複数のサブステップに分割してバネ系を安定積分し、格子と全図形を再描画する。
- * @param {number} now - requestAnimationFrame から渡される高精度タイムスタンプ（ミリ秒）
- */
-function loop(now) {
-  const dt = Math.min(0.033, (now - last) / 1000);
-  last = now;
+        sh.size = size;
+        sh.x = clamp(target.x + (i % 2 === 0 ? -offset : offset), sh.size, Math.max(sh.size, W - sh.size));
+        sh.y = clamp(target.y + (i % 3 === 0 ? -offset : offset), sh.size, Math.max(sh.size, H - sh.size));
+        sh.tx = target.x;
+        sh.ty = target.y;
+        sh.vx = 0;
+        sh.vy = 0;
+        sh.dragging = false;
+        sh.settled = false;
+      }
+    }
 
-  // バネを安定させるためのサブステップ
-  const STEPS = 4;
-  const sub = dt / STEPS;
-  for (let i = 0; i < STEPS; i++) {
-    for (const s of shapes) s.step(sub);
-  }
+    // 図形の初期配置を生成
+    const kinds = ['circle', 'square', 'triangle', 'diamond', 'hex'];
+    for (let i = 0; i < SHAPE_COUNT; i++) {
+      const k = kinds[i % kinds.length];
+      const hue = (i * 47) % 360;
+      const sh = new Shape(k, 0, 0, 0, hue);
+      sh.sizeFactor = 0.9 + Math.random() * 0.2;
+      shapes.push(sh);
+    }
+    layoutShapes();
 
-  drawGrid();
-  for (const s of shapes) s.draw(ctx);
+    /**
+     * 背景の格子線と交点のドットを描画する。
+     * 毎フレームの最初に呼び出され、キャンバス全体をクリアする役割も兼ねる。
+     */
+    function drawGrid() {
+      ctx.fillStyle = '#0e0f13';
+      ctx.fillRect(0, 0, W, H);
 
-  requestAnimationFrame(loop);
-}
-requestAnimationFrame(loop);
-</script>
+      ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = 0; x <= W; x += GRID) {
+        ctx.moveTo(x + 0.5, 0);
+        ctx.lineTo(x + 0.5, H);
+      }
+      for (let y = 0; y <= H; y += GRID) {
+        ctx.moveTo(0, y + 0.5);
+        ctx.lineTo(W, y + 0.5);
+      }
+      ctx.stroke();
+
+      // 格子の交点ドット
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      for (let x = 0; x <= W; x += GRID) {
+        for (let y = 0; y <= H; y += GRID) {
+          ctx.fillRect(x - 1, y - 1, 2, 2);
+        }
+      }
+    }
+
+    // 入力状態
+    let dragShape = null;
+    let dragDX = 0, dragDY = 0;
+
+    /**
+     * ポインタイベントをキャンバスローカル座標に変換する。
+     * @param {PointerEvent} e - ポインタイベント
+     * @returns {{x: number, y: number}} キャンバス左上を原点とする座標
+     */
+    function pointerPos(e) {
+      const r = canvas.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    }
+
+    canvas.addEventListener('pointerdown', (e) => {
+      const p = pointerPos(e);
+      for (let i = shapes.length - 1; i >= 0; i--) {
+        if (shapes[i].pick(p.x, p.y)) {
+          dragShape = shapes[i];
+          dragDX = dragShape.x - p.x;
+          dragDY = dragShape.y - p.y;
+          dragShape.dragging = true;
+          dragShape.vx = 0; dragShape.vy = 0;
+          // 最前面に移動
+          shapes.splice(i, 1);
+          shapes.push(dragShape);
+          canvas.classList.add('dragging');
+          canvas.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (!dragShape) return;
+      const p = pointerPos(e);
+      const nx = p.x + dragDX;
+      const ny = p.y + dragDY;
+      // リリース時の初速として速度を記録
+      dragShape.vx = (nx - dragShape.x) * 60;
+      dragShape.vy = (ny - dragShape.y) * 60;
+      dragShape.x = nx;
+      dragShape.y = ny;
+    });
+
+    canvas.addEventListener('pointerup', (e) => {
+      if (!dragShape) return;
+      dragShape.dragging = false;
+      dragShape.snap();
+      dragShape = null;
+      canvas.classList.remove('dragging');
+    });
+
+    // 固定ステップ積分を用いたアニメーションループ
+    let last = performance.now();
+    /**
+     * メインのアニメーションループ。
+     * 1フレームを複数のサブステップに分割してバネ系を安定積分し、格子と全図形を再描画する。
+     * @param {number} now - requestAnimationFrame から渡される高精度タイムスタンプ（ミリ秒）
+     */
+    function loop(now) {
+      const dt = Math.min(0.033, (now - last) / 1000);
+      last = now;
+
+      // バネを安定させるためのサブステップ
+      const STEPS = 4;
+      const sub = dt / STEPS;
+      for (let i = 0; i < STEPS; i++) {
+        for (const s of shapes) s.step(sub);
+      }
+
+      drawGrid();
+      for (const s of shapes) s.draw(ctx);
+
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  </script>
 </body>
 </html>
