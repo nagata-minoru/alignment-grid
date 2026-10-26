@@ -2,7 +2,7 @@
 
 図形をドラッグして離すと、バネと減衰の動きで最寄りの格子点へスナップする HTML Canvas デモです。
 
-![JavaScript](https://img.shields.io/badge/JavaScript-Node.js%2020+-f7df1e?logo=javascript&logoColor=000)
+![JavaScript](https://img.shields.io/badge/JavaScript-Node.js%2024+-f7df1e?logo=javascript&logoColor=000)
 ![Test](https://img.shields.io/badge/test-node%20--test-339933?logo=node.js&logoColor=fff)
 ![License](https://img.shields.io/badge/license-unlicensed-lightgrey)
 
@@ -25,17 +25,23 @@ https://nagata-minoru.github.io/alignment-grid/
 
 ## デモの実行
 
-ブラウザで次のファイルを開くだけで実行できます。
+Vite の開発サーバーで実行します。Node.js 24 以上が必要です。
 
-```text
-index.html
+```bash
+npm install
+npm run dev
 ```
 
-ローカルサーバーは必須ではありません。ファイルを直接開いて動作します。
+本番ビルドと確認は次のとおりです。
+
+```bash
+npm run build
+npm run preview
+```
 
 ## テスト
 
-Node.js 20 以上を想定しています。
+Node.js 24 以上を想定しています。
 
 ```bash
 npm test
@@ -60,13 +66,14 @@ npm test
 .
 ├── index.html
 ├── package.json
+├── vite.config.mjs
 └── test
     └── alignment-grid.test.js
 ```
 
 ## 開発メモ
 
-このプロジェクトはビルド手順を持ちません。アプリ本体は `index.html` に完結しており、テストだけ Node.js を使用します。
+開発サーバーとビルドに Vite を使用します。アプリ本体は引き続き `index.html` に完結しており、テストは Node.js 組み込みのテストランナーで `index.html` のインラインスクリプトを読み込みます。
 
 描画や入力処理を変更した場合は、次の観点でテストを追加または更新してください。
 
